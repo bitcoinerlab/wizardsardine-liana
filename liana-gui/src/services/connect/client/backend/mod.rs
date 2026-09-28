@@ -254,6 +254,15 @@ impl BackendClient {
         fingerprint_aliases: &HashMap<Fingerprint, String>,
         hws: &[HardwareWalletConfig],
     ) -> Result<(), DaemonError> {
+        if !crate::hw::THUNDERDEN_CONNECT_ENABLED
+            && hws
+                .iter()
+                .any(|cfg| cfg.kind == async_hwi::DeviceKind::ThunderDen.to_string())
+        {
+            return Err(DaemonError::Unexpected(crate::t!(
+                "hw-thunderden-connect-unavailable"
+            )));
+        }
         let wallets = self.list_wallets().await?;
         let wallet = wallets
             .iter()
@@ -281,6 +290,23 @@ impl BackendClient {
                         }),
                         fingerprint_aliases: None,
                     })
+                })
+                .await?;
+            }
+            if cfg.kind == async_hwi::DeviceKind::ThunderDen.to_string()
+                && !wallet
+                    .metadata
+                    .thunderden_hmacs
+                    .iter()
+                    .any(|hmac| hmac.fingerprint == cfg.fingerprint && hmac.hmac == cfg.token)
+            {
+                self.exec_request(Method::PATCH, &format!("/v1/wallets/{wallet_uuid}"), |r| {
+                    r.json(&serde_json::json!({
+                        "thunderden_hmac": {
+                            "fingerprint": cfg.fingerprint.to_string(),
+                            "hmac": cfg.token,
+                        }
+                    }))
                 })
                 .await?;
             }

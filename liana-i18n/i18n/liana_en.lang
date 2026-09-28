@@ -838,6 +838,9 @@ hw-no-taproot-miniscript
 
 hw-not-in-spending-path => "This signing device is not part of this spending path."
 
+hw-thunderden-connect-unavailable
+=> "Liana Connect does not support Thunder Den yet. Use Bitcoin Core or Electrum.";;
+
 import-success => "Import successful"
 
 installer-able-to-move-any-time => "Able to move the funds at any time."

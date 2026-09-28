@@ -288,8 +288,7 @@ dependencies = [
 [[package]]
 name = "async-hwi"
 version = "0.0.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f30263bda4fbe2613e08989a2526d44ee0c13f19a3badd0d8d872cc233d6611"
+source = "git+https://github.com/bitcoinerlab/wizardsardine-async-hwi?rev=dbbd1a7d29ddda504eb62b5f9d750d7c4ef21d34#dbbd1a7d29ddda504eb62b5f9d750d7c4ef21d34"
 dependencies = [
  "async-trait",
  "bitbox-api",
@@ -297,6 +296,7 @@ dependencies = [
  "coldcard",
  "crossbeam",
  "futures",
+ "getrandom 0.2.15",
  "hex",
  "hidapi",
  "ledger-apdu",

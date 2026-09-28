@@ -195,6 +195,8 @@ pub struct ProviderKey {
 pub struct WalletMetadata {
     pub wallet_alias: Option<String>,
     pub ledger_hmacs: Vec<LedgerHmac>,
+    #[serde(default)]
+    pub thunderden_hmacs: Vec<ThunderDenHmac>,
     pub fingerprint_aliases: Vec<FingerprintAlias>,
     pub provider_keys: Vec<ProviderKey>,
 }
@@ -203,6 +205,14 @@ pub const WALLET_ALIAS_MAXIMUM_LENGTH: usize = 64;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct LedgerHmac {
+    #[serde(deserialize_with = "deser_fromstr")]
+    pub fingerprint: bip32::Fingerprint,
+    pub user_id: String,
+    pub hmac: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ThunderDenHmac {
     #[serde(deserialize_with = "deser_fromstr")]
     pub fingerprint: bip32::Fingerprint,
     pub user_id: String,

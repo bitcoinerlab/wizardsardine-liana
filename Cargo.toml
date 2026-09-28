@@ -78,7 +78,7 @@ rdrand = "0.8"
 fern = "0.6"
 bip329 = { git = "https://github.com/wizardsardine/bip329", rev = "77c9d91" }
 async-trait = "0.1"
-async-hwi = "0.0.32"
+async-hwi = { git = "https://github.com/bitcoinerlab/wizardsardine-async-hwi", rev = "dbbd1a7d29ddda504eb62b5f9d750d7c4ef21d34" }
 hex = "0.4.3"
 email_address = "0.2.7"
 tokio = "1.21.0"

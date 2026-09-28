@@ -625,6 +625,17 @@ pub fn create_app_with_remote_backend(
             fingerprint: ledger_hmac.fingerprint,
             token: ledger_hmac.hmac,
         })
+        .chain(
+            wallet
+                .metadata
+                .thunderden_hmacs
+                .into_iter()
+                .map(|hmac| HardwareWalletConfig {
+                    kind: async_hwi::DeviceKind::ThunderDen.to_string(),
+                    fingerprint: hmac.fingerprint,
+                    token: hmac.hmac,
+                }),
+        )
         .collect();
 
     let aliases: HashMap<bitcoin::bip32::Fingerprint, String> = wallet

@@ -695,6 +695,14 @@ pub async fn create_remote_wallet(
     signer: Arc<Mutex<Signer>>,
     remote_backend: BackendClient,
 ) -> Result<WalletSettings, Error> {
+    if !crate::hw::THUNDERDEN_CONNECT_ENABLED
+        && ctx
+            .hws
+            .iter()
+            .any(|(kind, _, _)| *kind == async_hwi::DeviceKind::ThunderDen)
+    {
+        return Err(Error::Unexpected(t!("hw-thunderden-connect-unavailable")));
+    }
     let network_datadir = ctx.liana_directory.network_directory(ctx.network);
     network_datadir
         .init()

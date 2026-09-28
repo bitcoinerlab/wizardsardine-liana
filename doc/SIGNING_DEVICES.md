@@ -58,3 +58,16 @@ Miniscript support was introduced in
 
 NOTE: Krux devices will not be dectected by Liana; you use it by exporting the
 PSBT from Liana to an SD card, signing on the device, and importing the signed PSBT back.
+
+## [Thunder Den](https://github.com/bitcoinerlab/thunderden)
+
+Application version 0.0.1 supports P2WSH and Taproot Miniscript descriptors.
+Start the [QR bridge](https://github.com/bitcoinerlab/thunderden-qr-bridge) with
+`npx @bitcoinerlab/thunderden-qr-bridge` (Node.js 22 or later) and open its browser
+page before selecting a device in Liana. Use the same Bitcoin network on the
+offline laptop and complete the bridge's QR exchanges to identify and use it.
+Cancel unfinished identification in the bridge. Restart the bridge to retry
+or use a different signer.
+
+Use Bitcoin Core or Electrum as the wallet backend. Thunder Den is disabled for
+Liana Connect until its server supports Thunder Den registration tokens.

@@ -12,12 +12,28 @@ use async_hwi::{
     bitbox::{api::runtime, BitBox02, PairingBitbox02},
     coldcard,
     jade::{self, Jade},
-    ledger, specter, DeviceKind, Error as HWIError, Version, HWI,
+    ledger, specter,
+    thunderden::ThunderDen,
+    DeviceKind, Error as HWIError, Version, HWI,
 };
 use iced::futures::{SinkExt, Stream};
 use liana::miniscript::bitcoin::{bip32::Fingerprint, hashes::hex::FromHex, Network};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
+
+// Client support is implemented, but the Connect server does not support it yet.
+// We assume PATCH /v1/wallets/{wallet_uuid} accepts `thunderden_hmac` containing
+// `fingerprint` and `hmac`, using the same formats as Ledger. Wallet metadata must
+// return saved tokens in `thunderden_hmacs`, each with `fingerprint`, `hmac` and
+// `user_id`. Keep these records separate from Ledger tokens, even for the same
+// fingerprint. Confirm this contract with the server implementation.
+//
+// Once deployed, verify token upload and reopening the wallet on another computer.
+// Then remove this constant and all its checks: run the discovery block
+// unconditionally and delete the rejection blocks in create_remote_wallet and
+// update_wallet_metadata. Remove the temporary error message and update
+// doc/SIGNING_DEVICES.md.
+pub const THUNDERDEN_CONNECT_ENABLED: bool = false;
 
 #[derive(Debug, Clone)]
 pub enum UnsupportedReason {
@@ -58,6 +74,7 @@ pub enum HardwareWallet {
 pub enum LockedDevice {
     BitBox02(Box<PairingBitbox02<runtime::TokioRuntime>>),
     Jade(Jade<jade::SerialTransport>),
+    ThunderDen(Box<ThunderDen>),
 }
 
 impl std::fmt::Debug for LockedDevice {
@@ -271,6 +288,19 @@ impl HardwareWallets {
                                         |(id_cloned, res)| {
                                             HardwareWalletMessage::Unlocked(id_cloned, res)
                                         },
+                                    ));
+                                }
+                                Some(LockedDevice::ThunderDen(device)) => {
+                                    let id = id.clone();
+                                    let wallet = self.wallet.clone();
+                                    cmds.push(Task::perform(
+                                        async move {
+                                            (
+                                                id.clone(),
+                                                handle_thunderden_device(id, *device, wallet).await,
+                                            )
+                                        },
+                                        |(id, res)| HardwareWalletMessage::Unlocked(id, res),
                                     ));
                                 }
                             }
@@ -672,6 +702,35 @@ fn refresh(mut state: State) -> impl Stream<Item = HardwareWalletMessage> {
                 }
             }
 
+            if THUNDERDEN_CONNECT_ENABLED
+                || state
+                    .wallet
+                    .as_ref()
+                    .is_none_or(|w| w.remote_backend_auth.is_none())
+            {
+                match ThunderDen::try_connect(state.network).await {
+                    Ok(device) => {
+                        let id = device.id();
+                        if state.connected_supported_hws.contains(&id) {
+                            still.push(id);
+                        } else {
+                            hws.push(HardwareWallet::Locked {
+                                id,
+                                device: Arc::new(Mutex::new(Some(LockedDevice::ThunderDen(
+                                    Box::new(device),
+                                )))),
+                                pairing_code: None,
+                                kind: DeviceKind::ThunderDen,
+                            });
+                        }
+                    }
+                    Err(HWIError::DeviceNotFound) => {}
+                    Err(e) => {
+                        debug!("{}", e);
+                    }
+                }
+            }
+
             if let Some(wallet) = &state.wallet {
                 let wallet_keys = wallet.descriptor_keys();
                 for hw in &mut hws {
@@ -714,6 +773,56 @@ fn refresh(mut state: State) -> impl Stream<Item = HardwareWalletMessage> {
     })
 }
 
+async fn handle_thunderden_device(
+    id: String,
+    mut device: ThunderDen,
+    wallet: Option<Arc<Wallet>>,
+) -> Result<HardwareWallet, HWIError> {
+    let fingerprint = match device.get_master_fingerprint().await {
+        Ok(fingerprint) => fingerprint,
+        Err(HWIError::NetworkMismatch) => {
+            return Ok(HardwareWallet::Unsupported {
+                id,
+                kind: DeviceKind::ThunderDen,
+                version: None,
+                reason: UnsupportedReason::WrongNetwork,
+            })
+        }
+        Err(e) => return Err(e),
+    };
+    let version = device.get_version().await.ok();
+    let mut registered = false;
+    if let Some(wallet) = wallet {
+        if !wallet.descriptor_keys().contains(&fingerprint) {
+            return Ok(HardwareWallet::Unsupported {
+                id,
+                kind: DeviceKind::ThunderDen,
+                version,
+                reason: UnsupportedReason::NotPartOfWallet(fingerprint),
+            });
+        }
+        if let Some(cfg) = wallet.hardware_wallets.iter().find(|cfg| {
+            cfg.fingerprint == fingerprint && cfg.kind == DeviceKind::ThunderDen.to_string()
+        }) {
+            device = device.with_wallet(
+                &wallet.name,
+                &wallet.main_descriptor.to_string(),
+                Some(cfg.token()),
+            )?;
+            registered = true;
+        }
+    }
+    Ok(HardwareWallet::Supported {
+        id,
+        kind: DeviceKind::ThunderDen,
+        device: Arc::new(device),
+        fingerprint,
+        version,
+        registered: Some(registered),
+        alias: None,
+    })
+}
+
 async fn handle_ledger_device<'a, T: async_hwi::ledger::Transport + Sync + Send + 'static>(
     id: String,
     mut device: ledger::Ledger<T>,
@@ -731,6 +840,7 @@ async fn handle_ledger_device<'a, T: async_hwi::ledger::Transport + Sync + Send 
                     if let Some(cfg) = w
                         .hardware_wallets
                         .iter()
+                        .filter(|cfg| cfg.kind != DeviceKind::ThunderDen.to_string())
                         .find(|cfg| cfg.fingerprint == fingerprint)
                     {
                         device = device
@@ -880,7 +990,7 @@ fn ledger_version_supported(version: &Version) -> bool {
 
 // Kind and minimal version of devices supporting tapminiscript.
 // We cannot use a lazy_static HashMap yet, because DeviceKind does not implement Hash.
-const DEVICES_COMPATIBLE_WITH_TAPMINISCRIPT: [(DeviceKind, Option<Version>); 5] = [
+const DEVICES_COMPATIBLE_WITH_TAPMINISCRIPT: [(DeviceKind, Option<Version>); 6] = [
     (
         DeviceKind::Ledger,
         Some(Version {
@@ -907,6 +1017,15 @@ const DEVICES_COMPATIBLE_WITH_TAPMINISCRIPT: [(DeviceKind, Option<Version>); 5] 
             major: 9,
             minor: 21,
             patch: 0,
+            prerelease: None,
+        }),
+    ),
+    (
+        DeviceKind::ThunderDen,
+        Some(Version {
+            major: 0,
+            minor: 0,
+            patch: 1,
             prerelease: None,
         }),
     ),
