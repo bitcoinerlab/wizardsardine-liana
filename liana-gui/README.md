@@ -11,6 +11,7 @@ are:
 
 In addition, if you want to build the project from source, you will need:
 - [`pkg-config`](https://www.freedesktop.org/wiki/Software/pkg-config/) (On Debian/Ubuntu `apt install pkg-config`)
+- Clang and its development library for the Linux camera bindings (On Debian/Ubuntu `apt install clang libclang-dev`).
 
 
 ## Usage

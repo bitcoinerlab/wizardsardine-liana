@@ -24,6 +24,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::{
+    airgap,
     app::{
         config as gui_config,
         settings::{
@@ -605,6 +606,7 @@ pub async fn install_local_wallet(
         descriptor_checksum: wallet_id.descriptor_checksum.clone(),
         keys: ctx.keys.values().cloned().collect(),
         hardware_wallets,
+        airgapped_signers: ctx.airgapped_signers.values().cloned().collect(),
         remote_backend_auth: None,
         start_internal_bitcoind: Some(ctx.internal_bitcoind.is_some()),
         fiat_price: None,
@@ -826,6 +828,9 @@ pub async fn create_remote_wallet(
         pinned_at: wallet_id.timestamp,
         keys: Vec::new(),
         hardware_wallets: Vec::new(),
+        // The remote backend has no schema for an air-gapped signer, so unlike keys
+        // and hardware wallets these stay in the local settings file.
+        airgapped_signers: ctx.airgapped_signers.values().cloned().collect(),
         remote_backend_auth: Some(AuthConfig::new(
             remote_backend.user_id().to_string(),
             remote_backend.user_email().to_string(),
@@ -909,6 +914,9 @@ pub async fn import_remote_wallet(
         pinned_at: wallet_id.timestamp,
         keys: Vec::new(),
         hardware_wallets: Vec::new(),
+        // The remote backend has no schema for an air-gapped signer, so unlike keys
+        // and hardware wallets these stay in the local settings file.
+        airgapped_signers: ctx.airgapped_signers.values().cloned().collect(),
         remote_backend_auth: Some(AuthConfig::new(
             backend.user_id().to_string(),
             backend.user_email().to_string(),
@@ -1030,6 +1038,7 @@ pub enum Error {
     CannotGetAvailablePort(String),
     Unexpected(String),
     HardwareWallet(async_hwi::Error),
+    Airgap(airgap::Error),
     Backup(bip138::Error),
 }
 
@@ -1048,6 +1057,12 @@ impl From<jsonrpc::Error> for Error {
 impl From<async_hwi::Error> for Error {
     fn from(error: async_hwi::Error) -> Self {
         Error::HardwareWallet(error)
+    }
+}
+
+impl From<airgap::Error> for Error {
+    fn from(error: airgap::Error) -> Self {
+        Error::Airgap(error)
     }
 }
 
@@ -1084,6 +1099,7 @@ impl std::fmt::Display for Error {
             Self::CannotCreateFile(e) => write!(f, "Failed to create file: {e}"),
             Self::Unexpected(e) => write!(f, "Unexpected: {e}"),
             Self::HardwareWallet(e) => write!(f, "Hardware Wallet: {e}"),
+            Self::Airgap(e) => write!(f, "Air-gapped signer: {e}"),
             Self::Backup(e) => write!(f, "Backup: {e:?}"),
         }
     }

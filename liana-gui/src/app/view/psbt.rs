@@ -30,6 +30,7 @@ use liana_ui::{
 };
 
 use crate::{
+    airgap::AirgappedSignerConfig,
     app::{
         cache::Cache,
         error::Error,
@@ -366,6 +367,7 @@ fn change_view<'a>(
 pub fn sign_action<'a>(
     warning: Option<&Error>,
     hws: &'a [HardwareWallet],
+    airgapped: &'a [AirgappedSignerConfig],
     descriptor: &LianaDescriptor,
     signer: Option<Fingerprint>,
     signer_alias: Option<&'a String>,
@@ -401,6 +403,27 @@ pub fn sign_action<'a>(
             })
             .collect()
     };
+
+    for airgapped_signer in airgapped {
+        let fingerprint = airgapped_signer.fingerprint;
+        let can_sign = descriptor.contains_fingerprint_in_path(fingerprint, recovery_timelock);
+        let status = if signed.contains(&fingerprint) {
+            DeviceStatus::Signed
+        } else if !can_sign {
+            DeviceStatus::NotInPath
+        } else {
+            DeviceStatus::None
+        };
+        signers.push(modal::airgapped_signer_entry(
+            Some(format!("#{fingerprint}")),
+            Some(&airgapped_signer.model),
+            airgapped_signer.alias.as_ref(),
+            status,
+            (can_sign && !signed.contains(&fingerprint)).then_some(Message::Spend(
+                SpendTxMessage::SelectAirgappedSigner(fingerprint),
+            )),
+        ));
+    }
 
     signers.extend(signer.map(|fingerprint| {
         let can_sign = descriptor.contains_fingerprint_in_path(fingerprint, recovery_timelock);
