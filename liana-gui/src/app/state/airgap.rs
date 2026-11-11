@@ -7,12 +7,13 @@ use iced::{
 };
 use liana_ui::{
     component::{
-        button, card,
+        button, card, modal,
         qr::{self, Brightness},
         text::new::{b5_medium, caption},
     },
+    spacing::{HSpacing, VSpacing},
     theme,
-    widget::{Element, SpaceExt},
+    widget::{modal::Modal, Container, Element, SpaceExt},
 };
 
 use crate::airgap::{
@@ -30,6 +31,7 @@ const PREVIEW_HEIGHT: u32 = 300;
 #[derive(Debug, Clone)]
 pub enum AirgapAction {
     Brightness(Brightness),
+    Enlarge(bool),
     Tick,
     Scan,
     Cameras(Result<Vec<CameraDescriptor>, CameraFailure>),
@@ -65,6 +67,7 @@ pub struct AirgapModal {
     scanner: Option<CameraScanner>,
     preview: Option<image::Handle>,
     brightness: Brightness,
+    enlarged: bool,
     progress: Option<Progress>,
     error: Option<Error>,
     camera_error: Option<CameraFailure>,
@@ -87,6 +90,7 @@ impl AirgapModal {
             scanner: None,
             preview: None,
             brightness: Brightness::default(),
+            enlarged: false,
             progress: None,
             error: None,
             camera_error: None,
@@ -117,7 +121,11 @@ impl AirgapModal {
             // the view reads the current frame straight off the animation
             AirgapAction::Tick => {}
             AirgapAction::Brightness(brightness) => self.brightness = brightness,
+            AirgapAction::Enlarge(enlarged) => {
+                self.enlarged = enlarged && self.phase == Phase::ShowRequest;
+            }
             AirgapAction::Scan => {
+                self.enlarged = false;
                 self.stop_camera();
                 self.phase = Phase::StartingCamera;
                 self.clear_errors();
@@ -163,24 +171,42 @@ impl AirgapModal {
             .map(|error| card::error("Air-gapped signer", error));
 
         let body = match self.phase {
-            Phase::ShowRequest => self.request_view(to_message.clone()),
+            Phase::ShowRequest => self.request_view(to_message.clone(), false),
             Phase::StartingCamera => caption("Requesting camera access...").into(),
             Phase::Scanning => self.scanning_view(to_message.clone()),
             Phase::Done => Space::fill_width().into(),
         };
 
-        liana_ui::component::modal::modal_view(
+        let content = modal::modal_view(
             Some(self.title),
             None,
             Some(to_message(AirgapAction::Cancel)),
-            liana_ui::component::modal::ModalWidth::XL,
+            modal::ModalWidth::XL,
             column![warning, body].spacing(20).width(Length::Fill),
-        )
+        );
+        if self.enlarged {
+            // Closing the enlarged view returns to this same exchange.
+            Modal::new(
+                Container::new(content).center(Length::Fill),
+                modal::modal_view(
+                    Some(self.title),
+                    None,
+                    Some(to_message(AirgapAction::Enlarge(false))),
+                    Length::Fill,
+                    self.request_view(to_message.clone(), true),
+                ),
+            )
+            .on_blur(Some(to_message(AirgapAction::Enlarge(false))))
+            .into()
+        } else {
+            content
+        }
     }
 
     fn request_view<M: Clone + 'static>(
         &self,
         to_message: impl Fn(AirgapAction) -> M + Clone + 'static,
+        enlarged: bool,
     ) -> Element<'_, M> {
         let state = self.animation.as_ref().map(AnimatedQr::state);
         let frame = self
@@ -194,6 +220,11 @@ impl AirgapModal {
                     &f.data,
                     f.width,
                     f.height,
+                    if enlarged {
+                        Length::Fill
+                    } else {
+                        qr::FRAME_SIZE.into()
+                    },
                     state.filter(|state| state.total_frames > 1).map(|state| {
                         format!("Frame {} of {}", state.frame + 1, state.total_frames)
                     }),
@@ -204,14 +235,29 @@ impl AirgapModal {
             let to_message = to_message.clone();
             move |brightness| to_message(AirgapAction::Brightness(brightness))
         });
+        let scan = button::btn_scan_response(Some(to_message(AirgapAction::Scan)));
+        if enlarged {
+            return column![
+                frame,
+                row![brightness, Space::fill_width(), scan]
+                    .align_y(iced::Alignment::Center)
+                    .spacing(HSpacing::L),
+            ]
+            .spacing(VSpacing::M)
+            .into();
+        }
 
         column![
             b5_medium("Show this to your signer, then scan its answer back."),
             frame,
             brightness,
-            button::btn_scan_response(Some(to_message(AirgapAction::Scan))),
+            row![
+                button::btn_enlarge_qr(Some(to_message(AirgapAction::Enlarge(true)))),
+                scan,
+            ]
+            .spacing(HSpacing::L),
         ]
-        .spacing(15)
+        .spacing(VSpacing::M)
         .align_x(iced::Alignment::Center)
         .width(Length::Fill)
         .into()
@@ -342,6 +388,7 @@ impl AirgapModal {
 
     fn finish(&mut self, outcome: AirgapOutcome) {
         self.stop_camera();
+        self.enlarged = false;
         self.animation = None;
         self.phase = Phase::Done;
         self.outcome = Some(outcome);
@@ -354,4 +401,150 @@ fn request_id() -> bwk_qr::protocol::RequestId {
     let mut id = [0u8; bwk_qr::protocol::REQUEST_ID_LEN];
     getrandom::fill(&mut id).expect("the OS random source is required");
     bwk_qr::protocol::RequestId(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iced::{
+        advanced::{layout, renderer::Headless, widget::Tree, Layout, Shell},
+        mouse, Event, Size, Vector,
+    };
+
+    fn modal() -> AirgapModal {
+        AirgapModal::new(
+            "Register wallet",
+            Ask::Register {
+                wallet: crate::airgap::Wallet {
+                    alias: "Liana".to_owned(),
+                    descriptor: include_str!(
+                        "../../../test_assets/airgap/multisig-testnet.descriptor"
+                    )
+                    .trim()
+                    .parse()
+                    .unwrap(),
+                    registration: Default::default(),
+                },
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn enlarging_preserves_the_exchange_and_brightness() {
+        let mut modal = modal();
+        let frames = modal.exchange.frames().to_vec();
+        let time = std::time::Instant::now() + Duration::from_secs(1);
+        let state = modal.animation.as_ref().unwrap().state_at(time);
+        assert!(state.total_frames > 1);
+        let _ = modal.update(AirgapAction::Brightness(Brightness::new(70)));
+        for enlarged in [true, false, true, false] {
+            let _ = modal.update(AirgapAction::Enlarge(enlarged));
+            assert_eq!(modal.enlarged, enlarged);
+            assert_eq!(modal.phase, Phase::ShowRequest);
+            assert_eq!(modal.exchange.frames(), frames);
+            assert_eq!(modal.animation.as_ref().unwrap().state_at(time), state);
+            assert_eq!(modal.brightness.percent(), 70);
+            assert!(modal.take_outcome().is_none());
+        }
+    }
+
+    #[test]
+    fn starting_capture_leaves_the_enlarged_view() {
+        let mut modal = modal();
+        let _ = modal.update(AirgapAction::Enlarge(true));
+        let _ = modal.update(AirgapAction::Scan);
+        assert!(!modal.enlarged);
+        assert_eq!(modal.phase, Phase::StartingCamera);
+        let _ = modal.update(AirgapAction::Enlarge(true));
+        assert!(!modal.enlarged);
+        let _ = modal.update(AirgapAction::Back);
+        assert_eq!(modal.phase, Phase::ShowRequest);
+        assert!(!modal.enlarged);
+    }
+
+    #[tokio::test]
+    async fn enlarged_view_fits_and_its_close_button_returns_to_the_request() {
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, 16.into(), Some("tiny-skia"))
+            .await
+            .unwrap();
+        for size in [
+            Size::new(1000.0, 650.0),
+            Size::new(1280.0, 900.0),
+            Size::new(1920.0, 1080.0),
+        ] {
+            let mut modal = modal();
+            let _ = modal.update(AirgapAction::Enlarge(true));
+            let mut messages = Vec::new();
+            {
+                let mut view = modal.view(|action| action);
+                let mut tree = Tree::new(&view);
+                let node = view.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(Size::ZERO, size),
+                );
+                let mut overlay = view
+                    .as_widget_mut()
+                    .overlay(
+                        &mut tree,
+                        Layout::new(&node),
+                        &renderer,
+                        &iced::Rectangle::with_size(size),
+                        Vector::ZERO,
+                    )
+                    .unwrap();
+                let node = overlay.as_overlay_mut().layout(&renderer, size);
+                let column = Layout::new(&node)
+                    .children()
+                    .next()
+                    .unwrap()
+                    .children()
+                    .next()
+                    .unwrap();
+                let header = column.children().next().unwrap();
+                let body = column.children().nth(1).unwrap();
+                let qr = body
+                    .children()
+                    .next()
+                    .unwrap()
+                    .children()
+                    .next()
+                    .unwrap()
+                    .children()
+                    .next()
+                    .unwrap()
+                    .bounds();
+                let controls = body.children().last().unwrap().bounds();
+                assert!(qr.width > 0.0 && qr.height > 0.0);
+                assert!(qr.y + qr.height <= controls.y);
+                assert!(controls.y + controls.height <= size.height);
+                if size.height >= 900.0 {
+                    assert!(qr.width.min(qr.height) > qr::FRAME_SIZE as f32);
+                }
+                let close = header.children().last().unwrap().bounds().center();
+                for event in [
+                    mouse::Event::ButtonPressed(mouse::Button::Left),
+                    mouse::Event::ButtonReleased(mouse::Button::Left),
+                ] {
+                    overlay.as_overlay_mut().update(
+                        &Event::Mouse(event),
+                        Layout::new(&node),
+                        mouse::Cursor::Available(close),
+                        &renderer,
+                        &mut iced::advanced::clipboard::Null,
+                        &mut Shell::new(&mut messages),
+                    );
+                }
+            }
+            assert!(matches!(
+                messages.as_slice(),
+                [AirgapAction::Enlarge(false)]
+            ));
+            let _ = modal.update(messages.pop().unwrap());
+            assert!(!modal.enlarged);
+            assert_eq!(modal.phase, Phase::ShowRequest);
+            assert!(modal.take_outcome().is_none());
+        }
+    }
 }

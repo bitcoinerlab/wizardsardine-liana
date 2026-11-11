@@ -624,6 +624,11 @@ pub fn btn_try_other_paths<'a, T: Clone + 'a>(msg: Option<T>) -> Button<'a, T> {
     btn_primary(None, t!("btn-try-other-paths"), BtnWidth::Auto, msg)
 }
 
+/// Enlarge QR button: secondary. Width Auto.
+pub fn btn_enlarge_qr<'a, T: Clone + 'a>(msg: Option<T>) -> Button<'a, T> {
+    btn_secondary(None, t!("btn-enlarge-qr"), BtnWidth::Auto, msg)
+}
+
 /// Scan response button: primary. Width Auto.
 pub fn btn_scan_response<'a, T: Clone + 'a>(msg: Option<T>) -> Button<'a, T> {
     btn_primary(

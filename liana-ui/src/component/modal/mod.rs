@@ -73,7 +73,7 @@ pub fn modal_view<'a, M: 'a + Clone, C>(
     title: Option<impl Display>,
     back_message: Option<M>,
     close_message: Option<M>,
-    width: ModalWidth,
+    width: impl Into<Length>,
     content: C,
 ) -> Element<'a, M>
 where
@@ -94,7 +94,7 @@ pub fn modal_view_with_theme<'a, M: 'a + Clone, C>(
     title: Option<impl Display>,
     back_message: Option<M>,
     close_message: Option<M>,
-    width: ModalWidth,
+    width: impl Into<Length>,
     content: C,
     style: ContainerStyle,
 ) -> Element<'a, M>
@@ -106,7 +106,7 @@ where
         .push(content)
         .spacing(MODAL_SPACING)
         .padding(MODAL_PADDING)
-        .width(width as u32);
+        .width(width);
 
     let padding = Padding {
         top: 0.0,

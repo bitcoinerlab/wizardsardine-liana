@@ -83,6 +83,8 @@ btn-edit-keys => "Edit keys" => "Modifier les clés"
 
 btn-email-wizardsardine => "Email WS" => "Envoyer un e-mail à WS"
 
+btn-enlarge-qr => "Enlarge QR" => NONE
+
 btn-export => "Export" => "Exporter"
 
 btn-fee-level-high => "High" => "Élevé"

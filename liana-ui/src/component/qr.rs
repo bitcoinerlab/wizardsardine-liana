@@ -12,7 +12,7 @@ use crate::{
 
 /// Side of the rendered QR frame, in pixels. Large enough that a phone or a
 /// signer's camera reads a dense symbol from a comfortable distance.
-const FRAME_SIZE: u32 = 440;
+pub const FRAME_SIZE: u32 = 440;
 const CAPTION_SPACING: u32 = 10;
 const SLIDER_WIDTH: u32 = 200;
 
@@ -96,6 +96,7 @@ pub fn text<'a, M: 'a>(
         &image.data,
         image.width,
         image.height,
+        FRAME_SIZE.into(),
         caption_text,
     ))
 }
@@ -105,12 +106,14 @@ pub fn text<'a, M: 'a>(
 /// `data` is the grayscale matrix the QR encoder produced, one byte per pixel,
 /// dark modules at 0. It is painted in the QR theme's own two colours rather
 /// than the app palette, because a scanner needs the contrast, not the theme.
+/// Use [`Length::Fill`] to fit the frame into the available space.
 pub fn frame<'a, M: 'a>(
     theme_style: theme::qr_code::Style,
     brightness: Brightness,
     data: &[u8],
     width: u32,
     height: u32,
+    size: Length,
     caption_text: Option<String>,
 ) -> Element<'a, M> {
     let cell = to_rgba(theme_style.cell, 1.0);
@@ -121,8 +124,8 @@ pub fn frame<'a, M: 'a>(
         .collect();
     let frame = Container::new(
         image(image::Handle::from_rgba(width, height, rgba))
-            .width(FRAME_SIZE)
-            .height(FRAME_SIZE)
+            .width(size)
+            .height(size)
             .filter_method(image::FilterMethod::Nearest),
     )
     .padding(10)
