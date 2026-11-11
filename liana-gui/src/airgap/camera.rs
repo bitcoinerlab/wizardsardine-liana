@@ -17,8 +17,9 @@ use std::{
 };
 
 use bwk_qr::{
+    decoder::Decoder,
     scan::{Frame, Quircs, Scanner},
-    Config, Decoded, Decoder, Image, Progress,
+    Config, Decoded, Image, Progress,
 };
 use nokhwa::utils::{ApiBackend, CameraFormat, CameraIndex, FrameFormat};
 
@@ -254,7 +255,7 @@ fn run_camera(
     stop: Arc<AtomicBool>,
     sender: SyncSender<CameraEvent>,
 ) {
-    let mut decoder = match Decoder::new(config) {
+    let mut decoder = match Decoder::<QrScanner>::new(config) {
         Ok(decoder) => decoder,
         Err(error) => {
             send_lossless(
@@ -368,6 +369,71 @@ fn run_camera(
     stop_camera_stream(&mut camera);
 }
 
+/// Retries unreadable frames with local contrast before BBQR reassembly.
+#[derive(Default)]
+struct QrScanner;
+
+impl Scanner for QrScanner {
+    fn scan(&mut self, frame: Frame<'_>) -> Result<Vec<Vec<u8>>, bwk_qr::scan::Error> {
+        let mut payloads = Quircs.scan(frame)?;
+        if payloads.is_empty() {
+            let binary = local_threshold(frame);
+            payloads = Quircs.scan(Frame {
+                data: &binary,
+                ..frame
+            })?;
+        }
+        Ok(payloads)
+    }
+}
+
+/// A dark scene can put quircs' global threshold below even the dark QR modules.
+/// Compare pixels to the local mean minus three instead. Large windows preserve
+/// solid finder patterns; sliding column sums keep the work linear in frame size.
+fn local_threshold(frame: Frame<'_>) -> Vec<u8> {
+    if frame.data.is_empty() {
+        return Vec::new();
+    }
+    let width = frame.width as usize;
+    let height = frame.height as usize;
+    let window_width = width.div_ceil(8).next_power_of_two().clamp(16, 256);
+    let window_height = height.div_ceil(8).next_power_of_two().clamp(16, 256);
+    let half_width = window_width / 2;
+    let half_height = window_height / 2;
+    let area = (window_width * window_height) as u32;
+    let mut columns: Vec<u32> = (0..width)
+        .map(|x| u32::from(frame.data[x]) * (half_height + 1) as u32)
+        .collect();
+    for y in 1..half_height {
+        for (x, sum) in columns.iter_mut().enumerate() {
+            *sum += u32::from(frame.data[y.min(height - 1) * width + x]);
+        }
+    }
+    let mut binary = Vec::with_capacity(frame.data.len());
+    for y in 0..height {
+        let mut sum = columns[0] * (half_width + 1) as u32
+            + (1..half_width)
+                .map(|x| columns[x.min(width - 1)])
+                .sum::<u32>();
+        for x in 0..width {
+            binary.push(if (u32::from(frame.data[y * width + x]) + 3) * area < sum {
+                0
+            } else {
+                255
+            });
+            sum += columns[(x + half_width).min(width - 1)];
+            sum -= columns[x.saturating_sub(half_width)];
+        }
+        let top = y.saturating_sub(half_height) * width;
+        let bottom = (y + half_height).min(height - 1) * width;
+        for (x, sum) in columns.iter_mut().enumerate() {
+            *sum += u32::from(frame.data[bottom + x]);
+            *sum -= u32::from(frame.data[top + x]);
+        }
+    }
+    binary
+}
+
 /// Logs every distinct QR the camera reads, before the joiner swallows it.
 ///
 /// The decoder only ever hands back a message once every part has arrived, so a
@@ -377,7 +443,7 @@ fn run_camera(
 /// still have reached the decoder.
 #[derive(Default)]
 struct FrameLog {
-    scanner: Quircs,
+    scanner: QrScanner,
     seen: HashSet<Vec<u8>>,
 }
 
@@ -929,6 +995,96 @@ mod tests {
     fn a_preview_of_the_wrong_length_is_refused() {
         assert!(luma_to_preview_rgba(4, 2, &[0; 7]).is_none());
         assert!(luma_to_preview_rgba(0, 2, &[]).is_none());
+    }
+
+    fn screen_frame(qr: &Image) -> Image {
+        let mut frame = Image {
+            data: vec![20; 640 * 480],
+            width: 640,
+            height: 480,
+        };
+        for y in 60..420 {
+            frame.data[y * 640 + 80..y * 640 + 560].fill(230);
+        }
+        let left = (frame.width - qr.width) / 2;
+        let top = (frame.height - qr.height) / 2;
+        for y in 0..qr.height {
+            for x in 0..qr.width {
+                frame.data[((top + y) * frame.width + left + x) as usize] =
+                    if qr.data[(y * qr.width + x) as usize] < 128 {
+                        160
+                    } else {
+                        230
+                    };
+            }
+        }
+        frame
+    }
+
+    /// The dark surroundings must not make the screen's dark modules turn white.
+    #[test]
+    fn a_low_contrast_qr_is_read() {
+        let qr = Encoder::new(Config::default())
+            .unwrap()
+            .encode_text("screen contrast")
+            .unwrap();
+        let image = screen_frame(&qr);
+        let frame = Frame {
+            data: &image.data,
+            width: image.width,
+            height: image.height,
+        };
+        assert!(Quircs.scan(frame).unwrap().is_empty());
+        assert_eq!(
+            QrScanner.scan(frame).unwrap(),
+            vec![b"screen contrast".to_vec()]
+        );
+    }
+
+    #[test]
+    fn low_contrast_parts_reassemble_in_both_polarities() {
+        let config = Config {
+            max_qr_version: 11,
+            bbqr_part_bytes: 200,
+            ..Config::default()
+        };
+        let payload = vec![7; 500];
+        let frames = Encoder::new(config.clone())
+            .unwrap()
+            .encode_bytes(&payload)
+            .unwrap();
+        assert!(frames.len() > 1);
+        for inverted in [false, true] {
+            let mut decoder = Decoder::<QrScanner>::new(config.clone()).unwrap();
+            let mut decoded = Vec::new();
+            for qr in frames.iter().rev() {
+                let mut frame = screen_frame(qr);
+                if inverted {
+                    for pixel in &mut frame.data {
+                        *pixel = 255 - *pixel;
+                    }
+                }
+                decoded.extend(decoder.process(&frame).unwrap());
+            }
+            assert_eq!(decoded, vec![Decoded::Bytes(payload.clone())]);
+        }
+    }
+
+    #[test]
+    fn uniform_frames_stay_white_at_the_edges() {
+        for (width, height) in [(0, 0), (0, 2), (2, 0), (1, 1), (3, 2)] {
+            for value in [0, 127, 255] {
+                let data = vec![value; (width * height) as usize];
+                assert_eq!(
+                    local_threshold(Frame {
+                        data: &data,
+                        width,
+                        height,
+                    }),
+                    vec![255; data.len()]
+                );
+            }
+        }
     }
 
     /// A stalled scan must still leave every frame it did read in the log, so
